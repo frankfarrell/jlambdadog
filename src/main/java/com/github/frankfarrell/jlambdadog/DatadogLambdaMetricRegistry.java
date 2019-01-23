@@ -132,7 +132,17 @@ public class DatadogLambdaMetricRegistry {
                     final Snapshot snapshot = histogram.getSnapshot();
 
                     final Map<Expansion, Number> values = new HashMap<>();
-                    values.put(Expansion.COUNT, histogram.getCount());
+
+                    expansions.forEach(expansion -> {
+                        switch (expansion){
+                            case COUNT:
+                                values.put(Expansion.COUNT, histogram.getCount());
+                                break;
+                            default:
+                                values.put(expansion,EXPANSION_MAPPING.get(expansion).apply(snapshot));
+                                break;
+                        }
+                    });
 
                     values.forEach((expansion, value) -> {
                         printDatadogMetrics(
