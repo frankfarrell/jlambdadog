@@ -1,0 +1,37 @@
+buildscript {
+    repositories {
+        mavenCentral()
+    }
+}
+
+apply plugin: "java"
+jar {
+    baseName = "jlambdadog"
+    archivesBaseName = "jlambdadog"
+    manifest {
+        attributes("Implementation-Title": "Send metrics from your java AWS Lambda function to Datadog")
+    }
+}
+
+task wrapper(type: Wrapper) {
+    gradleVersion = "2.13"
+}
+
+group "com.github.frankfarrell"
+sourceCompatibility = 1.8
+targetCompatibility = 1.8
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    compile("com.codahale.metrics:metrics-core:3.0.1")
+
+    testCompile("junit:junit:4.12")
+    testCompile("org.assertj:assertj-core:3.8.0")
+    testCompile("org.mockito:mockito-core:2.9.0")
+    testCompile("nl.jqno.equalsverifier:equalsverifier:3.0")
+}
+
+
