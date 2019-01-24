@@ -159,6 +159,12 @@ public class DatadogLambdaMetricRegistry {
     }
 
     public void gauge(final String metricName,
+                      final Double value,
+                      final Long timestamp){
+        gauge(metricName, new HashMap<>(), value, timestamp);
+    }
+
+    public void gauge(final String metricName,
                       final Double value){
         gauge(metricName, new HashMap<>(), value);
     }
