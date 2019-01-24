@@ -49,6 +49,20 @@ public class DatadogLambdaMetricRegistryTest {
     }
 
     @Test
+    public void printAllGagugesClearsValuesAfterPrinting() {
+
+        datadogLambdaMetricRegistryUnderTest.gauge("test1", 10.5);
+        datadogLambdaMetricRegistryUnderTest.gauge("test2", 11.88);
+
+        assertThat(datadogLambdaMetricRegistryUnderTest.gauges).isNotEmpty();
+
+        datadogLambdaMetricRegistryUnderTest.printAllGauges();
+
+        assertThat(datadogLambdaMetricRegistryUnderTest.gauges).isEmpty();
+
+    }
+
+    @Test
     public void incrementTest() {
         datadogLambdaMetricRegistryUnderTest.increment("test1");
         datadogLambdaMetricRegistryUnderTest.increment("test1");

@@ -4,18 +4,13 @@ import com.codahale.metrics.Histogram;
 import com.codahale.metrics.SlidingTimeWindowReservoir;
 import com.codahale.metrics.Snapshot;
 
-
 import java.time.Instant;
-import java.util.Collections;
-import java.util.EnumSet;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
-import java.util.function.Supplier;
 
 import static java.util.stream.Collectors.joining;
 
@@ -40,10 +35,13 @@ public class DatadogLambdaMetricRegistry {
 
     public final EnumSet<Expansion> expansions;
 
+    //Does this need to be AtomicLong?
     protected final ConcurrentMap<TaggedMetricTuple, AtomicLong> counters;
     protected final ConcurrentMap<TaggedMetricTuple, Histogram> histograms;
-    private final Map<String, String> defaultTags;
 
+    protected final ConcurrentMap<TimestampGaugeTuple, Double> gauges;
+
+    private final Map<String, String> defaultTags;
 
     public DatadogLambdaMetricRegistry(){
         this(Expansion.ALL, Collections.emptyMap());
@@ -59,15 +57,23 @@ public class DatadogLambdaMetricRegistry {
 
     public DatadogLambdaMetricRegistry(final EnumSet<Expansion> expansions,
                                        final Map<String, String> defaultTags){
-        counters = new ConcurrentHashMap<>();
+        this.counters = new ConcurrentHashMap<>();
         this.histograms = new ConcurrentHashMap<>();
+        this.gauges = new ConcurrentHashMap<>();
         this.expansions = expansions;
         this.defaultTags = defaultTags;
     }
 
+    /**
+     * Prints the metrics to the console with System.out.println()
+     * and deletes all the counters from history
+     *
+     * Typically called at the end of a lambda invocation but can be called in the middle
+     */
     public void printMetrics(){
         this.printAllCounters();
         this.printAllCounters();
+        this.printAllGauges();
     }
 
     /**
@@ -94,22 +100,54 @@ public class DatadogLambdaMetricRegistry {
      * @param tagList
      * @param value
      */
-    public void increment( final String metricName,
-                           final Map<String, String> tagList,
-                           final Long value) {
+    public void increment(final String metricName,
+                          final Map<String, String> tagList,
+                          final Long value) {
         counters.putIfAbsent(new TaggedMetricTuple(metricName, tagList), new AtomicLong(0));
         counters.get(new TaggedMetricTuple(metricName, tagList))
                 .addAndGet(value);
     }
 
-    public void sample( final String metricName,
-                        final Long value){
+    /**
+     * Decrements a counter by one for the duration of the invocation
+     * @param metricName
+     */
+    public void decrement( final String metricName) {
+        decrement(metricName, new HashMap<>());
+    }
+
+    /**
+     * Decrement a counter by one with a list of tags
+     * @param metricName
+     * @param tagList
+     */
+    public void decrement( final String metricName,
+                           final Map<String, String> tagList) {
+        decrement(metricName, tagList, -1L);
+    }
+
+    /**
+     * Decrement a counter by value with a list of tags
+     * @param metricName
+     * @param tagList
+     * @param value should not be negative
+     */
+    public void decrement(final String metricName,
+                          final Map<String, String> tagList,
+                          final Long value) {
+        counters.putIfAbsent(new TaggedMetricTuple(metricName, tagList), new AtomicLong(0));
+        counters.get(new TaggedMetricTuple(metricName, tagList))
+                .addAndGet(-value);
+    }
+
+    public void sample(final String metricName,
+                       final Long value){
         sample(metricName, new HashMap<>(), value);
     }
 
-    public void sample( final String metricName,
-                        final Map<String, String> tagList,
-                        final Long value){
+    public void sample(final String metricName,
+                       final Map<String, String> tagList,
+                       final Long value){
         histograms.putIfAbsent(new TaggedMetricTuple(metricName, tagList),
                 new Histogram(new SlidingTimeWindowReservoir(MAX_LAMBDA_DURATION, TimeUnit.SECONDS)){
                     @Override
@@ -120,14 +158,44 @@ public class DatadogLambdaMetricRegistry {
         histograms.get(new TaggedMetricTuple(metricName, tagList)).update(value);
     }
 
+    public void gauge(final String metricName,
+                      final Double value){
+        gauge(metricName, new HashMap<>(), value);
+    }
+
+    public void gauge(final String metricName,
+                      final Map<String, String> tagList,
+                      final Double value){
+        gauge(metricName, tagList, value, Instant.now().getEpochSecond());
+    }
+
+    public void gauge(final String metricName,
+                      final Map<String, String> tagList,
+                      final Double value,
+                      final Long timestamp){
+        /*
+        For a given timestamp it overrides ny previous gauges measured for this metric+tag pair
+         */
+        gauges.put(new TimestampGaugeTuple(new TaggedMetricTuple(metricName, tagList), timestamp), value);
+    }
+
     protected void printAllCounters() {
-        counters.forEach((key, value) -> printDatadogMetrics(key.metricName, MetricType.COUNT, key.tags,defaultTags,value.get()));
+        final Long nowAsEpochSecond = Instant.now().getEpochSecond();
+        counters.forEach((key, value) ->
+                printDatadogMetrics(key.metricName,
+                        MetricType.COUNT,
+                        key.tags,
+                        defaultTags,
+                        value.get(),
+                        nowAsEpochSecond
+                ));
         counters.clear();
     }
 
     //Inspired by https://github.com/coursera/metrics-datadog/blob/master/metrics-datadog/src/main/java/org/coursera/metrics/datadog/DatadogReporter.java#L163
     protected void printAllHistograms() {
 
+        final Long nowAsEpochSecond = Instant.now().getEpochSecond();
         histograms.forEach((key, histogram)-> {
                     final Snapshot snapshot = histogram.getSnapshot();
 
@@ -150,12 +218,25 @@ public class DatadogLambdaMetricRegistry {
                                 MetricType.GAUGE,
                                 key.tags,
                                 defaultTags,
-                                value.longValue() //Is this right?
+                                value.longValue(), //Is this right?
+                                nowAsEpochSecond
                         );
                     });
                 }
         );
         histograms.clear();
+    }
+
+    protected void printAllGauges() {
+        gauges.forEach((key, value) ->
+                printDatadogMetrics(key.taggedMetricTuple.metricName,
+                        MetricType.GAUGE,
+                        key.taggedMetricTuple.tags,
+                        defaultTags,
+                        value,
+                        key.timestamp
+                ));
+        gauges  .clear();
     }
 
     private String appendExpansionSuffix( final String metricName,
@@ -170,13 +251,14 @@ public class DatadogLambdaMetricRegistry {
                                       final MetricType metricType,
                                       final Map<String, String> tagList,
                                       final Map<String, String> defaultTags,
-                                      final Long value) {
+                                      final Number value,
+                                      final Long epochSecond) {
         final HashMap<String, String> allTags = new HashMap<>();
         allTags.putAll(tagList);
         allTags.putAll(defaultTags);
         System.out.println(
                 String.format("MONITORING|%s|%s|%s|%s|%s",
-                        String.valueOf(Instant.now().getEpochSecond()),
+                        String.valueOf(epochSecond),
                         value,
                         metricType.toString(),
                         metricName,
@@ -203,7 +285,8 @@ public class DatadogLambdaMetricRegistry {
         final String metricName;
         final Map<String, String> tags;
 
-        public TaggedMetricTuple(String metricName, Map<String, String> tags) {
+        public TaggedMetricTuple(final String metricName,
+                                 final Map<String, String> tags) {
             this.metricName = metricName;
             this.tags = tags;
         }
@@ -227,6 +310,32 @@ public class DatadogLambdaMetricRegistry {
             int result = metricName != null ? metricName.hashCode() : 0;
             result = 31 * result + (tags != null ? createFormattedTagsList(tags).hashCode() : 0);
             return result;
+        }
+    }
+
+    public final static class TimestampGaugeTuple {
+
+        final TaggedMetricTuple taggedMetricTuple;
+        final Long timestamp;
+
+        public TimestampGaugeTuple(final TaggedMetricTuple taggedMetricTuple,
+                                   final Long timestamp) {
+            this.taggedMetricTuple = taggedMetricTuple;
+            this.timestamp = timestamp;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (o == null || getClass() != o.getClass()) return false;
+            TimestampGaugeTuple that = (TimestampGaugeTuple) o;
+            return Objects.equals(taggedMetricTuple, that.taggedMetricTuple) &&
+                    Objects.equals(timestamp, that.timestamp);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(taggedMetricTuple, timestamp);
         }
     }
 }
